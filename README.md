@@ -1,171 +1,137 @@
 # Webhook Wildix
 
 Un webhook server in Python per ricevere e gestire messaggi da un centralino Wildix.
-Server HTTP locale con reverse proxy Nginx per HTTPS.
 
-## Caratteristiche
+## ✨ Caratteristiche
 
-- **Server Flask**: Riceve webhook HTTP da Wildix
-- **Salvataggio JSON**: I messaggi vengono salvati in file JSON organizzati per data
-- **Logging**: Sistema di logging integrato per monitorare le attività
-- **Health Check**: Endpoint per verificare lo stato del servizio
-- **Conteggio Messaggi**: API per visualizzare statistiche sui messaggi ricevuti
-- **Nginx Ready**: Configurazione per reverse proxy HTTPS
+- **Server Flask**: Riceve webhook HTTP da Wildix sulla rete
+- **Autenticazione**: HMAC-SHA256 con secret condiviso  
+- **Salvataggio JSON**: Messaggi organizzati per data
+- **Health Check**: Monitoraggio stato servizio
+- **Logging**: Sistema integrato per debug e audit
 
-## Struttura del Progetto
+## 📁 Struttura
 
 ```
 webhook-wildix/
-├── app.py              # Server principale Flask
-├── requirements.txt    # Dipendenze Python
-├── README.md          # Questo file
-├── .env.example       # Template per variabili d'ambiente
-├── NGINX_SETUP.md     # Configurazione Nginx reverse proxy
-├── start_webhook.ps1  # Script di avvio Windows
-├── messages/          # Cartella dove vengono salvati i messaggi
-├── logs/              # Cartella per i log
-└── run.py             # Script per avvio in produzione
+├── app.py              # Server Flask principale
+├── requirements.txt    # Dipendenze Python  
+├── .env.example       # Template configurazione
+├── start_webhook.ps1  # Script avvio Windows
+├── setup_wildix_secret.ps1  # Configurazione secret
+├── check_config.ps1   # Verifica configurazione
+├── test.py            # Test webhook
+├── messages/          # Messaggi salvati (auto-creata)
+└── logs/              # Log applicazione (auto-creata)
 ```
 
-## Installazione
+## 🚀 Setup Rapido
 
-1. **Clona o crea il progetto**:
-   ```bash
-   cd c:\sviluppo\python\centralino\webhook-wildix
-   ```
+```powershell
+# 1. Crea ambiente virtuale
+python -m venv venv
+.\venv\Scripts\Activate.ps1
 
-2. **Crea un ambiente virtuale**:
-   ```bash
-   python -m venv venv
-   venv\Scripts\activate  # Su Windows
-   ```
+# 2. Installa dipendenze  
+pip install -r requirements.txt
 
-3. **Installa le dipendenze**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+# 3. Configura secret Wildix
+.\setup_wildix_secret.ps1 -Secret "your-wildix-secret"
 
-## Utilizzo
-
-### Avvio in Sviluppo
-
-```bash
-python app.py
+# 4. Avvia server
+.\start_webhook.ps1
 ```
 
-Il server sarà disponibile su `http://localhost:9001`
+## 🎯 Endpoint
 
-### Avvio in Produzione
+- **Webhook**: `http://your-server-ip:9001/webhook/wildix`
+- **Health**: `http://your-server-ip:9001/health`  
+- **Stats**: `http://your-server-ip:9001/messages/count`
 
-```bash
-python run.py
+## ⚙️ Configurazione Wildix
+
+Nel pannello admin Wildix:
+1. Vai su **Integrations** > **Webhooks**
+2. **URL**: `http://your-server-ip:9001/webhook/wildix`
+3. **Secret**: Lo stesso configurato nel webhook
+4. **Method**: POST, Content-Type: application/json
+5. Seleziona gli eventi che vuoi ricevere (chiamate, messaggi, ecc.)
+
+## 🔐 Sicurezza
+
+Il webhook richiede autenticazione tramite secret HMAC-SHA256:
+
+```powershell
+# Configura secret (obbligatorio)
+.\setup_wildix_secret.ps1 -Secret "your-secret-from-wildix"
 ```
 
-Oppure usando direttamente Gunicorn:
+⚠️ **Importante**: Usa sempre lo stesso secret su Wildix e webhook!
 
-```bash
-gunicorn -w 4 -b 0.0.0.0:9001 app:app
-```
+## 📋 Endpoint API
 
-## Endpoint Disponibili
+| Endpoint | Metodo | Descrizione |
+|----------|--------|-------------|
+| `/webhook/wildix` | POST | Riceve webhook da Wildix (JSON/form-data/raw) |
+| `/health` | GET | Health check del servizio |
+| `/messages/count` | GET | Statistiche messaggi salvati |
 
-### POST /webhook/wildix
-- **Scopo**: Riceve i webhook da Wildix
-- **Formato**: Accetta JSON, form-data, o raw data
-- **Risposta**: JSON con status e ID messaggio
+## 💾 Formato Dati
 
-**Esempio di utilizzo**:
-```bash
-curl -X POST http://localhost:9001/webhook/wildix \
-  -H "Content-Type: application/json" \
-  -d '{"tipo": "chiamata", "numero": "+391234567890", "durata": 120}'
-```
-
-### GET /health
-- **Scopo**: Health check del servizio
-- **Risposta**: Status del servizio
-
-### GET /messages/count
-- **Scopo**: Conta i messaggi salvati
-- **Risposta**: Statistiche sui messaggi per file
-
-## Configurazione Wildix
-
-Per configurare Wildix per inviare webhook a questo server:
-
-1. Accedi all'interfaccia amministrativa di Wildix
-2. Vai su **Integrations** > **Webhooks**
-3. Crea un nuovo webhook con URL: `https://yourdomain.com/webhook/wildix`
-4. Seleziona gli eventi che vuoi ricevere (chiamate, messaggi, ecc.)
-
-## Formato Messaggi Salvati
-
-I messaggi vengono salvati in file JSON con questa struttura:
+I messaggi vengono salvati come JSON organizzati per data:
 
 ```json
 [
   {
-    "id": "uuid-generato",
+    "id": "uuid-messaggio",
     "timestamp": "2024-11-15T10:30:00.123456",
-    "data": {
-      // Dati ricevuti da Wildix
-    },
+    "data": { /* Dati Wildix */ },
     "source": "wildix_webhook",
     "request_info": {
       "method": "POST",
-      "headers": {...},
-      "remote_addr": "192.168.1.100",
-        "url": "http://localhost:9001/webhook/wildix"
+      "remote_addr": "192.168.1.100"
     }
   }
 ]
 ```
 
-## File di Log
+**File salvati**: `messages/wildix_messages_YYYY-MM-DD.json`
 
-I messaggi vengono organizzati per data:
-- `messages/wildix_messages_2024-11-15.json`
-- `messages/wildix_messages_2024-11-16.json`
-- ecc.
-
-## Architettura con Nginx
+## 🏗️ Architettura Produzione
 
 ```
-Wildix → HTTPS → Nginx → HTTP → Flask App (localhost:9001)
+Wildix PBX → HTTPS → Nginx (443) → HTTP → Flask (9001)
 ```
 
-Vedi `NGINX_SETUP.md` per la configurazione completa del reverse proxy.
+Server Flask ascolta su `0.0.0.0:9001` per accesso di rete.
 
-## Prossimi Sviluppi
+## 🧪 Test
 
-- [ ] Integrazione con database (PostgreSQL/MySQL)
-- [ ] Sistema di code per elaborazione asincrona
-- [ ] API REST per gestione messaggi
-- [ ] Dashboard web per monitoraggio
-- [ ] Autenticazione e sicurezza
-- [ ] Backup automatico messaggi
+```powershell
+# Test webhook locale
+python test.py
 
-## Troubleshooting
+# Test health check
+curl http://localhost:9001/health
 
-### Problema: Server non si avvia
-- Verifica che la porta 9001 non sia già in uso
-- Controlla che l'ambiente virtuale sia attivo
-- Verifica l'installazione delle dipendenze
+# Test con dati personalizzati
+curl -X POST http://localhost:9001/webhook/wildix \
+  -H "Content-Type: application/json" \
+  -d '{"tipo": "chiamata", "numero": "+391234567890"}'
+```
 
-### Problema: Wildix non invia webhook
-- Controlla che l'URL sia raggiungibile da Wildix
-- Verifica la configurazione del firewall
-- Controlla i log di Wildix per errori
+## 🔧 Troubleshooting
 
-### Problema: Messaggi non vengono salvati
-- Verifica i permessi di scrittura nella cartella `messages/`
-- Controlla i log dell'applicazione per errori
+| Problema | Soluzione |
+|----------|-----------|
+| Server non si avvia | Verifica porta 9001 libera e ambiente virtuale attivo |
+| Wildix non invia webhook | Controlla URL raggiungibile e firewall |
+| Messaggi non salvati | Verifica permessi cartella `messages/` |
+| Errore autenticazione | Controlla secret identico su Wildix e webhook |
 
-## Contributi
+## 🚀 Roadmap
 
-Per contribuire al progetto:
-1. Fork del repository
-2. Crea un branch per la feature
-3. Commit delle modifiche
-4. Push del branch
-5. Crea una Pull Request
+- [ ] Database (PostgreSQL/MySQL) 
+- [ ] Sistema code asincrono
+- [ ] Dashboard web monitoraggio
+- [ ] Backup automatico
