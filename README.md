@@ -14,15 +14,15 @@ Un webhook server in Python per ricevere e gestire messaggi da un centralino Wil
 
 ```
 webhook-wildix/
-├── app.py              # Server Flask principale
-├── requirements.txt    # Dipendenze Python  
-├── .env.example       # Template configurazione
-├── start_webhook.ps1  # Script avvio Windows
+├── app.py                    # Server Flask principale
+├── requirements.txt          # Dipendenze Python  
+├── .env.example             # Template configurazione
+├── start_webhook.ps1        # Script avvio Windows
 ├── setup_wildix_secret.ps1  # Configurazione secret
-├── check_config.ps1   # Verifica configurazione
-├── test.py            # Test webhook
-├── messages/          # Messaggi salvati (auto-creata)
-└── logs/              # Log applicazione (auto-creata)
+├── check_config.ps1         # Verifica configurazione
+├── test.py                  # Test webhook
+├── messages/                # Messaggi salvati (auto-creata)
+└── logs/                    # Log applicazione (auto-creata)
 ```
 
 ## 🚀 Setup Rapido

@@ -4,9 +4,16 @@ import os
 from datetime import datetime
 import uuid
 import logging
+import hmac
+import hashlib
+from dotenv import load_dotenv
+
+# Carica variabili d'ambiente
+load_dotenv()
 
 # Configurazione logging
-logging.basicConfig(level=logging.INFO)
+log_level = os.getenv('LOG_LEVEL', 'INFO')
+logging.basicConfig(level=getattr(logging, log_level.upper()))
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
@@ -19,6 +26,35 @@ def ensure_directories():
     """Crea le cartelle necessarie se non esistono"""
     os.makedirs(MESSAGES_DIR, exist_ok=True)
     os.makedirs(LOGS_DIR, exist_ok=True)
+
+def validate_wildix_secret(request_data, signature, secret):
+    """Valida il secret Wildix usando HMAC-SHA256"""
+    if not secret:
+        logger.warning("Nessun secret configurato - accetto tutte le richieste")
+        return True
+    
+    if not signature:
+        logger.warning("Nessuna signature ricevuta da Wildix")
+        return False
+    
+    try:
+        # Rimuovi prefisso se presente (es. "sha256=")
+        if signature.startswith('sha256='):
+            signature = signature[7:]
+        
+        # Calcola HMAC della richiesta
+        expected_signature = hmac.new(
+            secret.encode('utf-8'),
+            request_data,
+            hashlib.sha256
+        ).hexdigest()
+        
+        # Confronto sicuro
+        return hmac.compare_digest(expected_signature, signature)
+        
+    except Exception as e:
+        logger.error(f"Errore nella validazione del secret: {str(e)}")
+        return False
 
 def save_message_to_file(message_data):
     """Salva il messaggio in un file JSON"""
@@ -66,9 +102,22 @@ def wildix_webhook():
     try:
         # Ottieni i dati della richiesta
         content_type = request.content_type
+        raw_data = request.get_data()
         
-        # Log della richiesta ricevuta
-        logger.info(f"Ricevuta richiesta webhook - Content-Type: {content_type}")
+        # Validazione del secret Wildix
+        wildix_secret = os.getenv('WILDIX_SECRET')
+        signature = request.headers.get('X-Wildix-Signature') or request.headers.get('X-Hub-Signature-256')
+        
+        if not validate_wildix_secret(raw_data, signature, wildix_secret):
+            logger.warning(f"Richiesta non autorizzata da {request.remote_addr}")
+            return jsonify({
+                "status": "error",
+                "message": "Unauthorized - Secret non valido",
+                "timestamp": datetime.now().isoformat()
+            }), 401
+        
+        # Log della richiesta ricevuta (dopo validazione)
+        logger.info(f"Richiesta webhook autorizzata - Content-Type: {content_type}")
         logger.info(f"Headers: {dict(request.headers)}")
         
         # Gestisci diversi tipi di contenuto
@@ -80,7 +129,7 @@ def wildix_webhook():
                 message_data = dict(request.form)
             else:
                 message_data = {
-                    "raw_data": request.get_data(as_text=True),
+                    "raw_data": raw_data.decode('utf-8'),
                     "content_type": content_type
                 }
         
@@ -89,7 +138,9 @@ def wildix_webhook():
             "method": request.method,
             "headers": dict(request.headers),
             "remote_addr": request.remote_addr,
-            "url": request.url
+            "url": request.url,
+            "authenticated": bool(wildix_secret),
+            "signature_validated": True
         }
         
         # Salva il messaggio
@@ -161,6 +212,12 @@ if __name__ == '__main__':
     # Crea le cartelle necessarie
     ensure_directories()
     
-    # Avvia il server (HTTP locale, HTTPS gestito da Nginx)
-    logger.info("Avvio del webhook server Wildix su HTTP (HTTPS via Nginx)...")
-    app.run(host='127.0.0.1', port=9001, debug=True)
+    # Configurazione da variabili d'ambiente
+    host = os.getenv('HOST', '0.0.0.0')
+    port = int(os.getenv('PORT', 9001))
+    debug = os.getenv('FLASK_DEBUG', 'True').lower() == 'true'
+    
+    # Avvia il server
+    logger.info(f"Avvio del webhook server Wildix su {host}:{port} (debug={debug})")
+    logger.info(f"Secret configurato: {'Sì' if os.getenv('WILDIX_SECRET') else 'No'}")
+    app.run(host=host, port=port, debug=debug)
