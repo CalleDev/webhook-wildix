@@ -20,7 +20,6 @@ webhook-wildix/
 ├── start_webhook.ps1        # Script avvio Windows
 ├── setup_wildix_secret.ps1  # Configurazione secret
 ├── check_config.ps1         # Verifica configurazione
-├── test.py                  # Test webhook
 ├── messages/                # Messaggi salvati (auto-creata)
 └── logs/                    # Log applicazione (auto-creata)
 ```
@@ -108,9 +107,6 @@ Server Flask ascolta su `0.0.0.0:9001` per accesso di rete.
 ## 🧪 Test
 
 ```powershell
-# Test webhook locale
-python test.py
-
 # Test health check
 curl http://localhost:9001/health
 
