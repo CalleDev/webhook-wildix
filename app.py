@@ -6,7 +6,12 @@ import uuid
 import logging
 import hmac
 import hashlib
+import re
+from urllib.parse import urlparse
 from dotenv import load_dotenv
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import psycopg2.pool
 
 # Carica variabili d'ambiente
 load_dotenv()
@@ -17,12 +22,15 @@ log_level = os.getenv('LOG_LEVEL', 'INFO')
 # Crea directory logs se non esiste
 os.makedirs("logs", exist_ok=True)
 
-# Configurazione logging con file e console
+# Configurazione logging con file e console (UTF-8 encoding)
 logging.basicConfig(
     level=getattr(logging, log_level.upper()),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.join("logs", f"wildix_webhook_{datetime.now().strftime('%Y-%m-%d')}.log")),
+        logging.FileHandler(
+            os.path.join("logs", f"wildix_webhook_{datetime.now().strftime('%Y-%m-%d')}.log"),
+            encoding='utf-8'
+        ),
         logging.StreamHandler()  # Per vedere i log anche in console
     ]
 )
@@ -33,6 +41,110 @@ app = Flask(__name__)
 # Configurazione cartelle
 MESSAGES_DIR = "messages"
 LOGS_DIR = "logs"
+
+# Configurazione PostgreSQL
+DB_CONFIG = {
+    'host': os.getenv('POSTGRES_HOST', 'localhost'),
+    'port': os.getenv('POSTGRES_PORT', '5432'),
+    'user': os.getenv('POSTGRES_USER', 'wildix_user'),
+    'password': os.getenv('POSTGRES_PASSWORD', 'wildix_password'),
+    'database': os.getenv('POSTGRES_DATABASE', 'wildix_webhook')
+}
+
+TABLE_NAME = os.getenv('POSTGRES_TABLE', 'messaggi_wildix')
+
+# Pool di connessioni PostgreSQL
+db_pool = None
+
+def init_database():
+    """Inizializza il pool di connessioni e crea la tabella se non esiste"""
+    global db_pool
+    try:
+        # Crea il pool di connessioni
+        db_pool = psycopg2.pool.SimpleConnectionPool(
+            minconn=1,
+            maxconn=10,
+            **DB_CONFIG
+        )
+        
+        logger.info(f"Pool di connessioni PostgreSQL creato")
+        
+        # Crea la tabella se non esiste
+        create_table_if_not_exists()
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Errore nell'inizializzazione del database: {str(e)}")
+        logger.warning("Continuero' con salvataggio su file JSON")
+        return False
+
+def create_table_if_not_exists():
+    """Crea la tabella messaggi_wildix se non esiste"""
+    create_table_sql = f"""
+    CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
+        id SERIAL PRIMARY KEY,
+        cliente_id VARCHAR(255) NOT NULL,
+        message JSONB NOT NULL,
+        data_creazione TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        processato BOOLEAN DEFAULT FALSE,
+        data_processato TIMESTAMP WITH TIME ZONE NULL
+    );
+    
+    -- Crea indici per ottimizzare le query
+    CREATE INDEX IF NOT EXISTS idx_cliente_id ON {TABLE_NAME} (cliente_id);
+    CREATE INDEX IF NOT EXISTS idx_processato ON {TABLE_NAME} (processato);
+    CREATE INDEX IF NOT EXISTS idx_data_creazione ON {TABLE_NAME} (data_creazione);
+    """
+    
+    conn = None
+    try:
+        conn = db_pool.getconn()
+        with conn.cursor() as cur:
+            cur.execute(create_table_sql)
+            conn.commit()
+            logger.info(f"✅ Tabella {TABLE_NAME} verificata/creata")
+            
+    except Exception as e:
+        logger.error(f"❌ Errore nella creazione della tabella: {str(e)}")
+        if conn:
+            conn.rollback()
+        raise
+    finally:
+        if conn:
+            db_pool.putconn(conn)
+
+def get_cliente_id_from_url(url):
+    """Estrae il cliente_id dall'URL della richiesta"""
+    try:
+        # Parse dell'URL per ottenere il path
+        parsed_url = urlparse(url)
+        path = parsed_url.path
+        
+        # Estrae l'ultima parte del path (dopo l'ultimo /)
+        # Esempio: /webhook/wildix/9efd89dfg9f8gd79 -> 9efd89dfg9f8gd79
+        path_parts = path.strip('/').split('/')
+        
+        # Cerca un codice alfanumerico nelle ultime parti del path
+        for part in reversed(path_parts):
+            # Verifica se la parte contiene solo caratteri alfanumerici e ha una lunghezza ragionevole
+            if re.match(r'^[a-zA-Z0-9]{8,}$', part):
+                logger.info(f"🆔 Cliente ID estratto dall'URL: {part}")
+                return part
+        
+        # Se non trova un pattern specifico, usa l'ultima parte del path
+        if len(path_parts) > 2:  # Salta 'webhook' e 'wildix'
+            cliente_id = path_parts[-1]
+            logger.info(f"🆔 Cliente ID dall'ultima parte del path: {cliente_id}")
+            return cliente_id
+        
+        # Fallback: usa l'indirizzo IP del client
+        logger.warning("⚠️  Impossibile estrarre cliente_id dall'URL, uso 'unknown'")
+        return 'unknown'
+        
+    except Exception as e:
+        logger.error(f"❌ Errore nell'estrazione del cliente_id: {str(e)}")
+        return 'error'
 
 def ensure_directories():
     """Crea le cartelle necessarie se non esistono"""
@@ -94,8 +206,48 @@ def validate_wildix_secret(request_data, signature, secret):
         logger.error(f"Errore nella validazione del secret: {str(e)}")
         return False
 
+def save_message_to_database(message_data, cliente_id):
+    """Salva il messaggio nel database PostgreSQL"""
+    if not db_pool:
+        logger.warning("⚠️  Database non disponibile, salvo su file")
+        return save_message_to_file(message_data)
+    
+    conn = None
+    try:
+        conn = db_pool.getconn()
+        with conn.cursor() as cur:
+            # Insert del messaggio nella tabella
+            insert_sql = f"""
+            INSERT INTO {TABLE_NAME} (cliente_id, message, processato) 
+            VALUES (%s, %s, %s) 
+            RETURNING id, data_creazione
+            """
+            
+            cur.execute(insert_sql, (cliente_id, json.dumps(message_data), False))
+            result = cur.fetchone()
+            
+            conn.commit()
+            
+            message_id = result[0]
+            data_creazione = result[1]
+            
+            logger.info(f"🗄️  Messaggio salvato nel DB: ID={message_id}, Cliente={cliente_id}")
+            return str(message_id)
+            
+    except Exception as e:
+        logger.error(f"❌ Errore nel salvare nel database: {str(e)}")
+        if conn:
+            conn.rollback()
+        # Fallback su file in caso di errore DB
+        logger.info("💾 Fallback: salvataggio su file")
+        return save_message_to_file(message_data)
+        
+    finally:
+        if conn:
+            db_pool.putconn(conn)
+
 def save_message_to_file(message_data):
-    """Salva il messaggio in un file JSON"""
+    """Salva il messaggio in un file JSON (fallback)"""
     try:
         # Genera un ID univoco per il messaggio
         message_id = str(uuid.uuid4())
@@ -127,7 +279,7 @@ def save_message_to_file(message_data):
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(messages, f, indent=2, ensure_ascii=False)
         
-        logger.info(f"Messaggio salvato: {message_id} in {filepath}")
+        logger.info(f"💾 Messaggio salvato su file: {message_id} in {filepath}")
         return message_id
         
     except Exception as e:
@@ -135,7 +287,8 @@ def save_message_to_file(message_data):
         raise
 
 @app.route('/webhook/wildix', methods=['POST'])
-def wildix_webhook():
+@app.route('/webhook/wildix/<string:cliente_id>', methods=['POST'])
+def wildix_webhook(cliente_id=None):
     """Endpoint principale per ricevere i webhook da Wildix"""
     try:
         # Log dettagliato della richiesta in arrivo
@@ -206,14 +359,21 @@ def wildix_webhook():
             "signature_validated": True
         }
         
-        # Salva il messaggio
-        message_id = save_message_to_file(message_data)
+        # Usa il cliente_id dal path se disponibile, altrimenti estrailo dall'URL
+        if not cliente_id:
+            cliente_id = get_cliente_id_from_url(request.url)
+        
+        logger.info(f"Cliente ID identificato: {cliente_id}")
+        
+        # Salva il messaggio nel database (con fallback su file)
+        message_id = save_message_to_database(message_data, cliente_id)
         
         # Risposta di successo
         response = {
             "status": "success",
             "message": "Webhook ricevuto e salvato",
             "message_id": message_id,
+            "cliente_id": cliente_id,
             "timestamp": datetime.now().isoformat()
         }
         
@@ -275,6 +435,9 @@ if __name__ == '__main__':
     # Crea le cartelle necessarie
     ensure_directories()
     
+    # Inizializza il database
+    db_available = init_database()
+    
     # Configurazione da variabili d'ambiente
     host = os.getenv('HOST', '0.0.0.0')
     port = int(os.getenv('PORT', 9001))
@@ -283,4 +446,5 @@ if __name__ == '__main__':
     # Avvia il server
     logger.info(f"Avvio del webhook server Wildix su {host}:{port} (debug={debug})")
     logger.info(f"Secret configurato: {'Sì' if os.getenv('WILDIX_SECRET') else 'No'}")
+    logger.info(f"Database PostgreSQL: {'Attivo' if db_available else 'Non disponibile (fallback su file)'}")
     app.run(host=host, port=port, debug=debug)
