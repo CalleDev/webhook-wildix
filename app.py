@@ -121,22 +121,17 @@ def get_cliente_id_from_url(url):
         parsed_url = urlparse(url)
         path = parsed_url.path
         
-        # Estrae l'ultima parte del path (dopo l'ultimo /)
-        # Esempio: /webhook/wildix/9efd89dfg9f8gd79 -> 9efd89dfg9f8gd79
+        # Estrae la prima parte del path (dopo il primo /)
+        # Esempio: /9efd89dfg9f8gd79 -> 9efd89dfg9f8gd79
         path_parts = path.strip('/').split('/')
         
-        # Cerca un codice alfanumerico nelle ultime parti del path
-        for part in reversed(path_parts):
-            # Verifica se la parte contiene solo caratteri alfanumerici e ha una lunghezza ragionevole
-            if re.match(r'^[a-zA-Z0-9]{8,}$', part):
-                logger.info(f"🆔 Cliente ID estratto dall'URL: {part}")
-                return part
-        
-        # Se non trova un pattern specifico, usa l'ultima parte del path
-        if len(path_parts) > 2:  # Salta 'webhook' e 'wildix'
-            cliente_id = path_parts[-1]
-            logger.info(f"🆔 Cliente ID dall'ultima parte del path: {cliente_id}")
-            return cliente_id
+        # Se c'è almeno una parte nel path, usa quella come client_id
+        if path_parts and path_parts[0]:
+            cliente_id = path_parts[0]
+            # Verifica se sembra un codice client valido
+            if re.match(r'^[a-zA-Z0-9]{3,}$', cliente_id):
+                logger.info(f"Cliente ID estratto dall'URL: {cliente_id}")
+                return cliente_id
         
         # Fallback: usa l'indirizzo IP del client
         logger.warning("⚠️  Impossibile estrarre cliente_id dall'URL, uso 'unknown'")
@@ -197,8 +192,8 @@ def validate_wildix_secret(request_data, signature, secret):
         logger.info(f"🔍 Signature calcolata: {expected_signature}")
         logger.info(f"🔍 Signature ricevuta: {signature}")
         
-        # Confronto sicuro
-        match = hmac.compare_digest(expected_signature, signature)
+        # Confronto sicuro (case-insensitive per la signature hex)
+        match = hmac.compare_digest(expected_signature, signature.lower())
         logger.info(f"🔍 Match delle signature: {match}")
         return match
         
@@ -286,8 +281,8 @@ def save_message_to_file(message_data):
         logger.error(f"Errore nel salvare il messaggio: {str(e)}")
         raise
 
-@app.route('/webhook/wildix', methods=['POST'])
-@app.route('/webhook/wildix/<string:cliente_id>', methods=['POST'])
+@app.route('/', methods=['POST'])
+@app.route('/<string:cliente_id>', methods=['POST'])
 def wildix_webhook(cliente_id=None):
     """Endpoint principale per ricevere i webhook da Wildix"""
     try:

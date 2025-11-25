@@ -43,7 +43,7 @@ pip install -r requirements.txt
 
 ## 🎯 Endpoint
 
-- **Webhook**: `http://your-server-ip:9001/webhook/wildix`
+- **Webhook**: `http://your-server-ip:9001/CLIENT_ID`
 - **Health**: `http://your-server-ip:9001/health`  
 - **Stats**: `http://your-server-ip:9001/messages/count`
 
@@ -51,7 +51,7 @@ pip install -r requirements.txt
 
 Nel pannello admin Wildix:
 1. Vai su **Integrations** > **Webhooks**
-2. **URL**: `http://your-server-ip:9001/webhook/wildix`
+2. **URL**: `http://your-server-ip:9001/CLIENT_ID` (sostituisci CLIENT_ID con il tuo codice cliente)
 3. **Secret**: Lo stesso configurato nel webhook
 4. **Method**: POST, Content-Type: application/json
 5. Seleziona gli eventi che vuoi ricevere (chiamate, messaggi, ecc.)
@@ -71,7 +71,7 @@ Il webhook richiede autenticazione tramite secret HMAC-SHA256:
 
 | Endpoint | Metodo | Descrizione |
 |----------|--------|-------------|
-| `/webhook/wildix` | POST | Riceve webhook da Wildix (JSON/form-data/raw) |
+| `/CLIENT_ID` | POST | Riceve webhook da Wildix per cliente specifico |
 | `/health` | GET | Health check del servizio |
 | `/messages/count` | GET | Statistiche messaggi salvati |
 
@@ -110,8 +110,8 @@ Server Flask ascolta su `0.0.0.0:9001` per accesso di rete.
 # Test health check
 curl http://localhost:9001/health
 
-# Test con dati personalizzati
-curl -X POST http://localhost:9001/webhook/wildix \
+# Test con dati personalizzati (sostituire CLIENT_ID)
+curl -X POST http://localhost:9001/CLIENT_ID \
   -H "Content-Type: application/json" \
   -d '{"tipo": "chiamata", "numero": "+391234567890"}'
 ```

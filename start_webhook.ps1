@@ -47,8 +47,8 @@ if (-not $ipAddress) {
 }
 
 Write-Host "📊 Configurazione (accessibile dalla rete):"
-Write-Host "   🌐 URL Webhook: http://$ipAddress:9001/webhook/wildix"
-Write-Host "   🏠 Locale: http://localhost:9001/webhook/wildix"
+Write-Host "   🌐 URL Webhook: http://$ipAddress:9001/CLIENT_ID"
+Write-Host "   🏠 Locale: http://localhost:9001/CLIENT_ID"
 Write-Host "   💚 Health Check: http://$ipAddress:9001/health"
 Write-Host "   📈 Statistiche: http://$ipAddress:9001/messages/count"
 Write-Host "   🔒 HTTPS: Configura Nginx per reverse proxy" -ForegroundColor Cyan
