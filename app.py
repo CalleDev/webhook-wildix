@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify
 import json
 import os
 from datetime import datetime
-import uuid
 import logging
 import hmac
 import hashlib
@@ -39,7 +38,6 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Configurazione cartelle
-MESSAGES_DIR = "messages"
 LOGS_DIR = "logs"
 
 # Configurazione PostgreSQL
@@ -57,7 +55,7 @@ TABLE_NAME = os.getenv('POSTGRES_TABLE', 'messaggi_wildix')
 db_pool = None
 
 def init_database():
-    """Inizializza il pool di connessioni e crea la tabella se non esiste"""
+    """Inizializza il pool di connessioni e verifica che la tabella esista"""
     global db_pool
     try:
         # Crea il pool di connessioni
@@ -69,47 +67,37 @@ def init_database():
         
         logger.info(f"Pool di connessioni PostgreSQL creato")
         
-        # Crea la tabella se non esiste
-        create_table_if_not_exists()
-        
+        # Verifica che la tabella esista
+        if not check_table_exists():
+            logger.error(f"❌ CRITICO: La tabella {TABLE_NAME} non esiste nel database!")
+            return False
+            
         return True
         
     except Exception as e:
         logger.error(f"Errore nell'inizializzazione del database: {str(e)}")
-        logger.warning("Continuero' con salvataggio su file JSON")
         return False
 
-def create_table_if_not_exists():
-    """Crea la tabella messaggi_wildix se non esiste"""
-    create_table_sql = f"""
-    CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
-        id SERIAL PRIMARY KEY,
-        cliente_id VARCHAR(255) NOT NULL,
-        message JSONB NOT NULL,
-        data_creazione TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-        processato BOOLEAN DEFAULT FALSE,
-        data_processato TIMESTAMP WITH TIME ZONE NULL
-    );
-    
-    -- Crea indici per ottimizzare le query
-    CREATE INDEX IF NOT EXISTS idx_cliente_id ON {TABLE_NAME} (cliente_id);
-    CREATE INDEX IF NOT EXISTS idx_processato ON {TABLE_NAME} (processato);
-    CREATE INDEX IF NOT EXISTS idx_data_creazione ON {TABLE_NAME} (data_creazione);
-    """
-    
+def check_table_exists():
+    """Verifica se la tabella esiste"""
     conn = None
     try:
         conn = db_pool.getconn()
         with conn.cursor() as cur:
-            cur.execute(create_table_sql)
-            conn.commit()
-            logger.info(f"✅ Tabella {TABLE_NAME} verificata/creata")
+            # Verifica esistenza tabella
+            cur.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = %s)", (TABLE_NAME,))
+            exists = cur.fetchone()[0]
+            
+            if exists:
+                logger.info(f"✅ Tabella {TABLE_NAME} trovata")
+                return True
+            else:
+                logger.error(f"❌ Tabella {TABLE_NAME} NON trovata")
+                return False
             
     except Exception as e:
-        logger.error(f"❌ Errore nella creazione della tabella: {str(e)}")
-        if conn:
-            conn.rollback()
-        raise
+        logger.error(f"❌ Errore nella verifica della tabella: {str(e)}")
+        return False
     finally:
         if conn:
             db_pool.putconn(conn)
@@ -143,7 +131,6 @@ def get_cliente_id_from_url(url):
 
 def ensure_directories():
     """Crea le cartelle necessarie se non esistono"""
-    os.makedirs(MESSAGES_DIR, exist_ok=True)
     os.makedirs(LOGS_DIR, exist_ok=True)
 
 def validate_wildix_secret(request_data, signature, secret):
@@ -204,8 +191,8 @@ def validate_wildix_secret(request_data, signature, secret):
 def save_message_to_database(message_data, cliente_id):
     """Salva il messaggio nel database PostgreSQL"""
     if not db_pool:
-        logger.warning("⚠️  Database non disponibile, salvo su file")
-        return save_message_to_file(message_data)
+        logger.error("⚠️  Database non disponibile, impossibile salvare il messaggio")
+        raise Exception("Database non disponibile")
     
     conn = None
     try:
@@ -233,53 +220,11 @@ def save_message_to_database(message_data, cliente_id):
         logger.error(f"❌ Errore nel salvare nel database: {str(e)}")
         if conn:
             conn.rollback()
-        # Fallback su file in caso di errore DB
-        logger.info("💾 Fallback: salvataggio su file")
-        return save_message_to_file(message_data)
+        raise
         
     finally:
         if conn:
             db_pool.putconn(conn)
-
-def save_message_to_file(message_data):
-    """Salva il messaggio in un file JSON (fallback)"""
-    try:
-        # Genera un ID univoco per il messaggio
-        message_id = str(uuid.uuid4())
-        timestamp = datetime.now().isoformat()
-        
-        # Prepara i dati del messaggio
-        message_record = {
-            "id": message_id,
-            "timestamp": timestamp,
-            "data": message_data,
-            "source": "wildix_webhook"
-        }
-        
-        # Nome del file basato sulla data
-        date_str = datetime.now().strftime("%Y-%m-%d")
-        filename = f"wildix_messages_{date_str}.json"
-        filepath = os.path.join(MESSAGES_DIR, filename)
-        
-        # Se il file esiste, carica i messaggi esistenti
-        messages = []
-        if os.path.exists(filepath):
-            with open(filepath, 'r', encoding='utf-8') as f:
-                messages = json.load(f)
-        
-        # Aggiungi il nuovo messaggio
-        messages.append(message_record)
-        
-        # Salva tutti i messaggi
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(messages, f, indent=2, ensure_ascii=False)
-        
-        logger.info(f"💾 Messaggio salvato su file: {message_id} in {filepath}")
-        return message_id
-        
-    except Exception as e:
-        logger.error(f"Errore nel salvare il messaggio: {str(e)}")
-        raise
 
 @app.route('/', methods=['POST'])
 @app.route('/<string:cliente_id>', methods=['POST'])
@@ -302,7 +247,8 @@ def wildix_webhook(cliente_id=None):
             logger.info(f"📝 Raw data preview: {raw_data[:200]}..." if len(raw_data) > 200 else f"📝 Raw data: {raw_data}")
         
         # Validazione del secret Wildix
-        wildix_secret = os.getenv('WILDIX_SECRET')
+        # wildix_secret = os.getenv('WILDIX_SECRET')
+        wildix_secret = None # Secret disabilitato (gestito da Nginx Proxy)
         signature = request.headers.get('x-signature') or request.headers.get('X-Signature')
         
         # Log dettagliato per debug autenticazione
@@ -397,27 +343,26 @@ def health_check():
 def messages_count():
     """Endpoint per contare i messaggi salvati"""
     try:
-        total_messages = 0
-        files_info = []
-        
-        if os.path.exists(MESSAGES_DIR):
-            for filename in os.listdir(MESSAGES_DIR):
-                if filename.endswith('.json'):
-                    filepath = os.path.join(MESSAGES_DIR, filename)
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        messages = json.load(f)
-                        count = len(messages)
-                        total_messages += count
-                        files_info.append({
-                            "file": filename,
-                            "count": count
-                        })
-        
-        return jsonify({
-            "total_messages": total_messages,
-            "files": files_info,
-            "timestamp": datetime.now().isoformat()
-        }), 200
+        if not db_pool:
+            return jsonify({
+                "error": "Database non disponibile",
+                "timestamp": datetime.now().isoformat()
+            }), 503
+
+        conn = None
+        try:
+            conn = db_pool.getconn()
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT COUNT(*) FROM {TABLE_NAME}")
+                count = cur.fetchone()[0]
+                
+                return jsonify({
+                    "total_messages": count,
+                    "timestamp": datetime.now().isoformat()
+                }), 200
+        finally:
+            if conn:
+                db_pool.putconn(conn)
         
     except Exception as e:
         logger.error(f"Errore nel conteggio messaggi: {str(e)}")
