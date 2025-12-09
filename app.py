@@ -201,20 +201,19 @@ def save_message_to_database(message_data, cliente_id):
             # Insert del messaggio nella tabella
             insert_sql = f"""
             INSERT INTO {TABLE_NAME} (cliente_id, message, processato) 
-            VALUES (%s, %s, %s) 
-            RETURNING id, data_creazione
+            VALUES (%s, %s, %s)
             """
             
-            cur.execute(insert_sql, (cliente_id, json.dumps(message_data), False))
-            result = cur.fetchone()
+            json_message = json.dumps(message_data)
+            logger.info(f"📝 Esecuzione SQL: {insert_sql}")
+            logger.info(f"📝 Parametri: cliente_id={cliente_id}, message length={len(json_message)}")
+            
+            cur.execute(insert_sql, (cliente_id, json_message, False))
             
             conn.commit()
             
-            message_id = result[0]
-            data_creazione = result[1]
-            
-            logger.info(f"🗄️  Messaggio salvato nel DB: ID={message_id}, Cliente={cliente_id}")
-            return str(message_id)
+            logger.info(f"🗄️  Messaggio salvato nel DB per Cliente={cliente_id}")
+            return "inserted"
             
     except Exception as e:
         logger.error(f"❌ Errore nel salvare nel database: {str(e)}")
@@ -222,6 +221,33 @@ def save_message_to_database(message_data, cliente_id):
             conn.rollback()
         raise
         
+    finally:
+        if conn:
+            db_pool.putconn(conn)
+
+def get_client_secret(cliente_id):
+    """Recupera il secret del cliente dal database"""
+    if not db_pool:
+        logger.error("Database non disponibile per recupero secret")
+        return None
+    
+    conn = None
+    try:
+        conn = db_pool.getconn()
+        with conn.cursor() as cur:
+            # Recupera il secret dalla tabella webhook_secret
+            # TODO: Se il secret è criptato, implementare la decriptazione (es. pgp_sym_decrypt)
+            query = "SELECT secret FROM webhook_secret WHERE client_id = %s"
+            cur.execute(query, (cliente_id,))
+            result = cur.fetchone()
+            
+            if result:
+                return result[0]
+            return None
+            
+    except Exception as e:
+        logger.error(f"Errore nel recupero del secret per {cliente_id}: {str(e)}")
+        return None
     finally:
         if conn:
             db_pool.putconn(conn)
@@ -235,53 +261,46 @@ def wildix_webhook(cliente_id=None):
         logger.info(f"🔄 Richiesta ricevuta da {request.remote_addr}")
         logger.info(f"📋 Method: {request.method}")
         logger.info(f"🌐 URL: {request.url}")
-        logger.info(f"📄 Content-Type: {request.content_type}")
-        logger.info(f"📏 Content-Length: {request.headers.get('Content-Length', 'N/A')}")
         
-        # Ottieni i dati della richiesta
-        content_type = request.content_type
-        raw_data = request.get_data()
+        # 1. Identifica il cliente_id (dal path o dall'URL)
+        if not cliente_id:
+            cliente_id = get_cliente_id_from_url(request.url)
+            
+        logger.info(f"Cliente ID identificato: {cliente_id}")
         
-        logger.info(f"📦 Raw data length: {len(raw_data)} bytes")
-        if raw_data:
-            logger.info(f"📝 Raw data preview: {raw_data[:200]}..." if len(raw_data) > 200 else f"📝 Raw data: {raw_data}")
+        # 2. Recupera il secret specifico per il cliente dal DB
+        wildix_secret = get_client_secret(cliente_id)
         
-        # Validazione del secret Wildix
-        # wildix_secret = os.getenv('WILDIX_SECRET')
-        wildix_secret = None # Secret disabilitato (gestito da Nginx Proxy)
-        signature = request.headers.get('x-signature') or request.headers.get('X-Signature')
-        
-        # Log dettagliato per debug autenticazione
-        logger.info(f"🔐 Headers ricevuti: {dict(request.headers)}")
-        logger.info(f"🔑 Secret configurato: {'Sì' if wildix_secret else 'No'}")
-        logger.info(f"✍️ Signature ricevuta: {signature}")
-        
-        if signature:
-            logger.info(f"📏 Lunghezza signature: {len(signature)}")
-            logger.info(f"🎯 Tipo signature: {type(signature)}")
-        
-        auth_result = validate_wildix_secret(raw_data, signature, wildix_secret)
-        logger.info(f"🛡️ Risultato validazione: {auth_result}")
-        
-        if not auth_result:
-            logger.warning(f"❌ Richiesta NON AUTORIZZATA da {request.remote_addr}")
-            logger.warning(f"❌ Secret presente: {'Sì' if wildix_secret else 'No'}")
-            logger.warning(f"❌ Signature presente: {'Sì' if signature else 'No'}")
+        if not wildix_secret:
+            logger.warning(f"⚠️ Nessun secret trovato per il cliente {cliente_id} - Richiesta rifiutata")
             return jsonify({
                 "status": "error",
-                "message": "Unauthorized - Secret non valido",
+                "message": "Unauthorized - Client unknown or no secret",
+                "timestamp": datetime.now().isoformat()
+            }), 401
+
+        # 3. Ottieni i dati e valida la firma
+        content_type = request.content_type
+        raw_data = request.get_data()
+        signature = request.headers.get('x-signature') or request.headers.get('X-Signature')
+        
+        logger.info(f"🔐 Validazione secret per cliente {cliente_id}")
+        auth_result = validate_wildix_secret(raw_data, signature, wildix_secret)
+        
+        if not auth_result:
+            logger.warning(f"❌ Richiesta NON AUTORIZZATA da {request.remote_addr} per cliente {cliente_id}")
+            return jsonify({
+                "status": "error",
+                "message": "Unauthorized - Invalid signature",
                 "timestamp": datetime.now().isoformat()
             }), 401
         
-        # Log della richiesta ricevuta (dopo validazione)
-        logger.info(f"Richiesta webhook autorizzata - Content-Type: {content_type}")
-        logger.info(f"Headers: {dict(request.headers)}")
+        logger.info(f"✅ Richiesta webhook autorizzata per cliente {cliente_id}")
         
-        # Gestisci diversi tipi di contenuto
+        # 4. Elabora il contenuto
         if content_type and 'application/json' in content_type:
             message_data = request.get_json(force=True)
         else:
-            # Se non è JSON, prova a ottenere i dati come form o raw
             if request.form:
                 message_data = dict(request.form)
             else:
@@ -290,35 +309,26 @@ def wildix_webhook(cliente_id=None):
                     "content_type": content_type
                 }
         
-        # Aggiungi informazioni sulla richiesta
+        # Aggiungi metadati
         message_data["request_info"] = {
             "method": request.method,
             "headers": dict(request.headers),
             "remote_addr": request.remote_addr,
             "url": request.url,
-            "authenticated": bool(wildix_secret),
+            "authenticated": True,
             "signature_validated": True
         }
         
-        # Usa il cliente_id dal path se disponibile, altrimenti estrailo dall'URL
-        if not cliente_id:
-            cliente_id = get_cliente_id_from_url(request.url)
-        
-        logger.info(f"Cliente ID identificato: {cliente_id}")
-        
-        # Salva il messaggio nel database (con fallback su file)
+        # 5. Salva nel DB
         message_id = save_message_to_database(message_data, cliente_id)
         
-        # Risposta di successo
-        response = {
+        return jsonify({
             "status": "success",
             "message": "Webhook ricevuto e salvato",
             "message_id": message_id,
             "cliente_id": cliente_id,
             "timestamp": datetime.now().isoformat()
-        }
-        
-        return jsonify(response), 200
+        }), 200
         
     except Exception as e:
         logger.error(f"Errore nell'elaborazione del webhook: {str(e)}")
