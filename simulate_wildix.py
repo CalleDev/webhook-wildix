@@ -30,7 +30,8 @@ def generate_curl_command(customer_id, secret, data):
     # Questo formato dovrebbe funzionare su Bash e PowerShell (con qualche accortezza)
     
     print("Comando CURL (copia e incolla nel terminale):")
-    print(f'curl -X POST "http://localhost:9001/{customer_id}" -H "Content-Type: application/json" -H "X-Signature: {signature}" -d \'{body_str}\'')
+    # Aggiungiamo sia X-Signature che X-Wildix-Signature per compatibilità
+    print(f'curl -X POST "http://localhost:9001/{customer_id}" -H "Content-Type: application/json" -H "X-Signature: {signature}" -H "X-Wildix-Signature: {signature}" -d \'{body_str}\'')
 
 if __name__ == "__main__":
     # CONFIGURAZIONE TEST

@@ -11,6 +11,8 @@ from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import psycopg2.pool
+import base64
+from cryptography.fernet import Fernet
 
 # Carica variabili d'ambiente
 load_dotenv()
@@ -20,6 +22,7 @@ log_level = os.getenv('LOG_LEVEL', 'INFO')
 
 # Crea directory logs se non esiste
 os.makedirs("logs", exist_ok=True)
+SECRET_KEY = os.getenv("SECRET_KEY", "default-secret-key")
 
 # Configurazione logging con file e console (UTF-8 encoding)
 logging.basicConfig(
@@ -133,6 +136,26 @@ def ensure_directories():
     """Crea le cartelle necessarie se non esistono"""
     os.makedirs(LOGS_DIR, exist_ok=True)
 
+# Encryption helpers
+def get_cipher_suite():
+    # Derive a 32-byte key from the app SECRET_KEY
+    key = hashlib.sha256(SECRET_KEY.encode()).digest()
+    key_b64 = base64.urlsafe_b64encode(key)
+    return Fernet(key_b64)
+
+def encrypt_value(value: str) -> str:
+    if not value: return None
+    cipher = get_cipher_suite()
+    return cipher.encrypt(value.encode()).decode()
+
+def decrypt_value(value: str) -> str:
+    if not value: return None
+    try:
+        cipher = get_cipher_suite()
+        return cipher.decrypt(value.encode()).decode()
+    except Exception:
+        return value # Return as is if decryption fails
+
 def validate_wildix_secret(request_data, signature, secret):
     """Valida il secret Wildix usando HMAC-SHA256"""
     logger.info(f"🔍 Inizio validazione secret")
@@ -148,41 +171,20 @@ def validate_wildix_secret(request_data, signature, secret):
         return False
     
     try:
-        original_signature = signature
-        logger.info(f"🔍 Signature originale: {original_signature}")
+         # Rimuovi prefisso se presente (es. "sha256=")
+        if signature.startswith('sha256='):
+            signature = signature[7:]
         
-        # Wildix non usa prefisso sha256=, è solo l'hash hex
-        # Non rimuoviamo nessun prefisso
-        
-        # Per Wildix, dobbiamo usare il JSON string del body, non i raw data
-        # Se i dati sono JSON, li convertiamo in stringa come fa Wildix
-        try:
-            # Prova a parsare come JSON e riconvertire in stringa (come fa Node.js)
-            json_data = json.loads(request_data.decode('utf-8'))
-            data_for_hmac = json.dumps(json_data, separators=(',', ':'))
-            logger.info(f"🔍 Uso JSON string per HMAC: {data_for_hmac}")
-        except:
-            # Se non è JSON valido, usa i raw data come stringa
-            data_for_hmac = request_data.decode('utf-8')
-            logger.info(f"🔍 Uso raw data per HMAC: {data_for_hmac}")
-        
-        # Calcola HMAC della richiesta (come fa Wildix)
-        logger.info(f"🔍 Calcolo HMAC con secret lunghezza: {len(secret)}")
-        logger.info(f"🔍 Dati per HMAC lunghezza: {len(data_for_hmac)}")
-        
+        # Calcola HMAC della richiesta
         expected_signature = hmac.new(
             secret.encode('utf-8'),
-            data_for_hmac.encode('utf-8'),
+            request_data,
             hashlib.sha256
         ).hexdigest()
         
-        logger.info(f"🔍 Signature calcolata: {expected_signature}")
-        logger.info(f"🔍 Signature ricevuta: {signature}")
-        
-        # Confronto sicuro (case-insensitive per la signature hex)
-        match = hmac.compare_digest(expected_signature, signature.lower())
-        logger.info(f"🔍 Match delle signature: {match}")
-        return match
+        # Confronto sicuro
+        return hmac.compare_digest(expected_signature, signature)
+
         
     except Exception as e:
         logger.error(f"Errore nella validazione del secret: {str(e)}")
@@ -200,7 +202,7 @@ def save_message_to_database(message_data, customer_id):
         with conn.cursor() as cur:
             # Insert del messaggio nella tabella
             insert_sql = f"""
-            INSERT INTO {TABLE_NAME} (customer_id, message, processato) 
+            INSERT INTO {TABLE_NAME} (customer_id, message, processed) 
             VALUES (%s, %s, %s)
             """
             
@@ -269,7 +271,14 @@ def wildix_webhook(customer_id=None):
         logger.info(f"Cliente ID identificato: {customer_id}")
         
         # 2. Recupera il secret specifico per il cliente dal DB
-        wildix_secret = get_client_secret(customer_id)
+        db_wildix_secret = get_client_secret(customer_id)
+        wildix_secret = decrypt_value(db_wildix_secret)
+
+        logger.info(f"------SECRET_KEY: {SECRET_KEY}")
+        logger.info(f"------db_wildix_secret: {db_wildix_secret}")
+        logger.info(f"------wildix_secret: {wildix_secret}")
+
+
         
         if not wildix_secret:
             logger.warning(f"⚠️ Nessun secret trovato per il cliente {customer_id} - Richiesta rifiutata")
@@ -282,7 +291,7 @@ def wildix_webhook(customer_id=None):
         # 3. Ottieni i dati e valida la firma
         content_type = request.content_type
         raw_data = request.get_data()
-        signature = request.headers.get('x-signature') or request.headers.get('X-Signature')
+        signature = request.headers.get('X-Wildix-Signature') or request.headers.get('X-Hub-Signature-256')
         
         logger.info(f"🔐 Validazione secret per cliente {customer_id}")
         auth_result = validate_wildix_secret(raw_data, signature, wildix_secret)
