@@ -102,7 +102,7 @@ def check_table_exists():
         if conn:
             db_pool.putconn(conn)
 
-def get_cliente_id_from_url(url):
+def get_customer_id_from_url(url):
     """Estrae il cliente_id dall'URL della richiesta"""
     try:
         # Parse dell'URL per ottenere il path
@@ -115,11 +115,11 @@ def get_cliente_id_from_url(url):
         
         # Se c'è almeno una parte nel path, usa quella come client_id
         if path_parts and path_parts[0]:
-            cliente_id = path_parts[0]
+            customer_id = path_parts[0]
             # Verifica se sembra un codice client valido
-            if re.match(r'^[a-zA-Z0-9]{3,}$', cliente_id):
-                logger.info(f"Cliente ID estratto dall'URL: {cliente_id}")
-                return cliente_id
+            if re.match(r'^[a-zA-Z0-9]{3,}$', customer_id):
+                logger.info(f"Cliente ID estratto dall'URL: {customer_id}")
+                return customer_id
         
         # Fallback: usa l'indirizzo IP del client
         logger.warning("⚠️  Impossibile estrarre cliente_id dall'URL, uso 'unknown'")
@@ -188,7 +188,7 @@ def validate_wildix_secret(request_data, signature, secret):
         logger.error(f"Errore nella validazione del secret: {str(e)}")
         return False
 
-def save_message_to_database(message_data, cliente_id):
+def save_message_to_database(message_data, customer_id):
     """Salva il messaggio nel database PostgreSQL"""
     if not db_pool:
         logger.error("⚠️  Database non disponibile, impossibile salvare il messaggio")
@@ -200,19 +200,19 @@ def save_message_to_database(message_data, cliente_id):
         with conn.cursor() as cur:
             # Insert del messaggio nella tabella
             insert_sql = f"""
-            INSERT INTO {TABLE_NAME} (cliente_id, message, processato) 
+            INSERT INTO {TABLE_NAME} (customer_id, message, processato) 
             VALUES (%s, %s, %s)
             """
             
             json_message = json.dumps(message_data)
             logger.info(f"📝 Esecuzione SQL: {insert_sql}")
-            logger.info(f"📝 Parametri: cliente_id={cliente_id}, message length={len(json_message)}")
+            logger.info(f"📝 Parametri: customer_id={customer_id}, message length={len(json_message)}")
             
-            cur.execute(insert_sql, (cliente_id, json_message, False))
+            cur.execute(insert_sql, (customer_id, json_message, False))
             
             conn.commit()
             
-            logger.info(f"🗄️  Messaggio salvato nel DB per Cliente={cliente_id}")
+            logger.info(f"🗄️  Messaggio salvato nel DB per Cliente={customer_id}")
             return "inserted"
             
     except Exception as e:
@@ -225,7 +225,7 @@ def save_message_to_database(message_data, cliente_id):
         if conn:
             db_pool.putconn(conn)
 
-def get_client_secret(cliente_id):
+def get_client_secret(customer_id):
     """Recupera il secret del cliente dal database"""
     if not db_pool:
         logger.error("Database non disponibile per recupero secret")
@@ -237,8 +237,8 @@ def get_client_secret(cliente_id):
         with conn.cursor() as cur:
             # Recupera il secret dalla tabella webhook_secret
             # TODO: Se il secret è criptato, implementare la decriptazione (es. pgp_sym_decrypt)
-            query = "SELECT secret FROM webhook_secret WHERE client_id = %s"
-            cur.execute(query, (cliente_id,))
+            query = "SELECT secret FROM webhook_secret WHERE customer_id = %s"
+            cur.execute(query, (customer_id,))
             result = cur.fetchone()
             
             if result:
@@ -246,15 +246,15 @@ def get_client_secret(cliente_id):
             return None
             
     except Exception as e:
-        logger.error(f"Errore nel recupero del secret per {cliente_id}: {str(e)}")
+        logger.error(f"Errore nel recupero del secret per {customer_id}: {str(e)}")
         return None
     finally:
         if conn:
             db_pool.putconn(conn)
 
 @app.route('/', methods=['POST'])
-@app.route('/<string:cliente_id>', methods=['POST'])
-def wildix_webhook(cliente_id=None):
+@app.route('/<string:customer_id>', methods=['POST'])
+def wildix_webhook(customer_id=None):
     """Endpoint principale per ricevere i webhook da Wildix"""
     try:
         # Log dettagliato della richiesta in arrivo
@@ -263,16 +263,16 @@ def wildix_webhook(cliente_id=None):
         logger.info(f"🌐 URL: {request.url}")
         
         # 1. Identifica il cliente_id (dal path o dall'URL)
-        if not cliente_id:
-            cliente_id = get_cliente_id_from_url(request.url)
+        if not customer_id:
+            customer_id = get_customer_id_from_url(request.url)
             
-        logger.info(f"Cliente ID identificato: {cliente_id}")
+        logger.info(f"Cliente ID identificato: {customer_id}")
         
         # 2. Recupera il secret specifico per il cliente dal DB
-        wildix_secret = get_client_secret(cliente_id)
+        wildix_secret = get_client_secret(customer_id)
         
         if not wildix_secret:
-            logger.warning(f"⚠️ Nessun secret trovato per il cliente {cliente_id} - Richiesta rifiutata")
+            logger.warning(f"⚠️ Nessun secret trovato per il cliente {customer_id} - Richiesta rifiutata")
             return jsonify({
                 "status": "error",
                 "message": "Unauthorized - Client unknown or no secret",
@@ -284,18 +284,18 @@ def wildix_webhook(cliente_id=None):
         raw_data = request.get_data()
         signature = request.headers.get('x-signature') or request.headers.get('X-Signature')
         
-        logger.info(f"🔐 Validazione secret per cliente {cliente_id}")
+        logger.info(f"🔐 Validazione secret per cliente {customer_id}")
         auth_result = validate_wildix_secret(raw_data, signature, wildix_secret)
         
         if not auth_result:
-            logger.warning(f"❌ Richiesta NON AUTORIZZATA da {request.remote_addr} per cliente {cliente_id}")
+            logger.warning(f"❌ Richiesta NON AUTORIZZATA da {request.remote_addr} per cliente {customer_id}")
             return jsonify({
                 "status": "error",
                 "message": "Unauthorized - Invalid signature",
                 "timestamp": datetime.now().isoformat()
             }), 401
         
-        logger.info(f"✅ Richiesta webhook autorizzata per cliente {cliente_id}")
+        logger.info(f"✅ Richiesta webhook autorizzata per cliente {customer_id}")
         
         # 4. Elabora il contenuto
         if content_type and 'application/json' in content_type:
@@ -320,13 +320,13 @@ def wildix_webhook(cliente_id=None):
         }
         
         # 5. Salva nel DB
-        message_id = save_message_to_database(message_data, cliente_id)
+        message_id = save_message_to_database(message_data, customer_id)
         
         return jsonify({
             "status": "success",
             "message": "Webhook ricevuto e salvato",
             "message_id": message_id,
-            "cliente_id": cliente_id,
+            "customer_id": customer_id,
             "timestamp": datetime.now().isoformat()
         }), 200
         
