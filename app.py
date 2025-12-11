@@ -291,8 +291,9 @@ def wildix_webhook(customer_id=None):
         # 3. Ottieni i dati e valida la firma
         content_type = request.content_type
         raw_data = request.get_data()
-        signature = request.headers.get('X-Wildix-Signature') or request.headers.get('X-Hub-Signature-256')
-        
+        logger.info(f"headers : {request.headers}")
+        logger.info(f"data : {raw_data}")
+        signature = request.headers.get('X-Wildix-Signature') or request.headers.get('X-Hub-Signature-256') or request.headers.get('X-Signature')
         logger.info(f"🔐 Validazione secret per cliente {customer_id}")
         auth_result = validate_wildix_secret(raw_data, signature, wildix_secret)
         
